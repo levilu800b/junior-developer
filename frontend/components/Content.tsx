@@ -79,14 +79,14 @@ export default function Content({ item }: { item: Item }) {
   const uncited = item.sources.filter((source) => source.citation === null);
 
   return (
-    <article className="w-full rounded-lg bg-white p-4 text-slate-900 shadow-lg sm:p-6">
+    <article data-testid="item" className="w-full rounded-lg bg-white p-4 text-slate-900 shadow-lg sm:p-6">
       <p className="text-sm font-semibold tracking-wide text-[#004b88] uppercase">
         {categoryLabel(item.category)}
       </p>
 
       <section className="mt-3">
         <h3 className="sr-only">Question</h3>
-        <p className="border-l-4 border-slate-300 pl-4 text-lg leading-relaxed italic">
+        <p data-testid="question" className="border-l-4 border-slate-300 pl-4 text-lg leading-relaxed italic">
           <Question question={item.question} />
         </p>
       </section>
@@ -94,6 +94,7 @@ export default function Content({ item }: { item: Item }) {
       <section className="mt-6">
         <h3 className="mb-2 font-bold">Answer</h3>
         <div
+          data-testid="answer"
           className="leading-relaxed whitespace-pre-line [&_a]:ml-0.5 [&_a]:align-super [&_a]:text-xs [&_a]:font-semibold [&_a]:text-[#004b88] [&_a]:hover:underline"
           dangerouslySetInnerHTML={{ __html: cleanAnswer(item.content) }}
         />
@@ -101,7 +102,7 @@ export default function Content({ item }: { item: Item }) {
 
       <section className="mt-6 border-t border-slate-200 pt-4">
         <h3 className="mb-2 font-bold">Sources</h3>
-        <ol>
+        <ol data-testid="cited-sources">
           {cited.map((source) => (
             <li key={source.id} className="flex items-start gap-1">
               <span className="mt-2 w-6 shrink-0 text-right text-sm font-semibold text-slate-500">
@@ -117,7 +118,7 @@ export default function Content({ item }: { item: Item }) {
             <h4 className="mt-4 mb-1 text-sm font-semibold text-slate-500">
               Also found, but not cited in the answer
             </h4>
-            <ul className="pl-7">
+            <ul data-testid="uncited-sources" className="pl-7">
               {uncited.map((source) => (
                 <li key={source.id}>
                   <SourceLink source={source} />

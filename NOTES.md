@@ -79,7 +79,7 @@ The code is in `backend/app/redaction.py`, with tests in `backend/tests/test_red
 
 The code is in `frontend/app/page.tsx`, `frontend/components/Content.tsx` and `frontend/lib/data.ts`. The repo's `AGENTS.md` (written by `next dev`) points out that Next.js 16 differs from older versions, so I read the bundled docs on data fetching and caching first.
 
-- **Fetching.** `ContentList` is a Server Component that calls `getData()` inside the existing `<Suspense>`. With `cacheComponents` on, that streams fresh data on each request behind the "Loading..." fallback. I didn't add `"use cache"`, because the backend is the source of truth and already caches the slow part. The backend URL comes from `BACKEND_URL` and defaults to `http://localhost:8000`. The fetch runs on the server, so it doesn't need a `NEXT_PUBLIC_` variable. If the backend is down, the page shows a message instead of crashing. The types in `lib/data.ts` mirror `backend/app/models.py`.
+- **Fetching.** `ContentList` is a Server Component that calls `getData()` inside the existing `<Suspense>`. With `cacheComponents` on, that streams fresh data on each request behind the "Loading..." fallback. I didn't add `"use cache"`, because the backend is the source of truth and already caches the slow part. The backend URL comes from `BACKEND_URL` and defaults to `http://localhost:8000`. The fetch runs on the server, so it doesn't need a `NEXT_PUBLIC_` variable. If the backend is down, the page shows a message instead of crashing. I checked this by running the production build with `BACKEND_URL` pointing at a port with nothing on it. The first `npm run build` logged a `HANGING_PROMISE_REJECTION` error: during prerendering, Next.js deliberately interrupts the `fetch` to mark the data as dynamic, and my `.catch()` was catching that as if it were a real error. Following the `unstable_rethrow` docs, the catch now passes Next.js's own errors back to it, and the build is clean. The types in `lib/data.ts` mirror `backend/app/models.py`.
 - **The answer's HTML.** The answer is HTML written by a model, so I don't pass it straight to `dangerouslySetInnerHTML`. It's cleaned with `sanitize-html` first, on the server, so none of it ships to the browser. Only formatting tags (`b`, `strong`, `em`, lists) and `a` with `href` and `title` are allowed, and only `https` links. Every link gets `target="_blank" rel="noopener noreferrer"`. `npm audit` flagged XSS advisories against sanitize-html up to 2.17.7, so I used 2.18.1, which fixes them. The `\n`s in the answers are kept with `whitespace-pre-line` rather than turned into `<br>`s.
 - **Layout.** Each item is a white card on the blue background, with its category, the question, the answer and the sources.
   - The question is shown as a quote. Each placeholder is styled as a grey chip with a tooltip ("Name removed"), so it's obvious something was redacted rather than looking like odd text.
@@ -87,10 +87,45 @@ The code is in `frontend/app/page.tsx`, `frontend/components/Content.tsx` and `f
   - The sources list puts the cited ones first, numbered to match the links in the answer. The uncited ones go under "Also found, but not cited in the answer", so the adviser can tell what the answer actually relied on. Each source shows its favicon, title and site name.
   - The padding gets smaller on narrow screens.
 - **Favicons.** I used `next/image` with `unoptimized`. The icons are 16px and come from any number of sites, so Next's image optimiser gains nothing, and this way `next.config.ts` doesn't need a `remotePatterns` entry for every site a source might come from. They have `alt=""` because they're decorative, and the site name is shown as text next to them.
-- **Checks.** `tsc --noEmit` and `npm run lint` pass. I checked the rendered page with headless Chrome screenshots, which is how I found the blank police.uk icon. The browser console shows a hydration warning, but it comes from my browser extensions (Grammarly and Scribe add attributes to `<body>`), not the app.
+- **Checks.** `tsc --noEmit` and `npm run lint` pass, and the Cypress tests cover the page (see [Testing](#testing)). I checked the rendered page with headless Chrome screenshots, which is how I found the blank police.uk icon. The browser console shows a hydration warning, but it comes from my browser extensions (Grammarly and Scribe add attributes to `<body>`), not the app.
+
+## Testing
+
+I think testing is very important. It's how I confirm the software actually does what it should, rather than assuming it does because it looks right. It also lets anyone change the code later without breaking something by accident. Writing tests caught two real problems in this task that I'd otherwise have missed, both described below. So I added two layers of tests.
+
+### Backend unit tests (pytest): 12 tests
+
+Run them with `cd backend && uv run pytest`. These test the logic on its own, quickly, without the server or the 1.2 GB model.
+
+- **`tests/test_citations.py`** (7 tests). Refs become numbered links. A repeat citation reuses its number. Sources come back cited first, then uncited. A ref with a typo links to the closest source. A ref that matches nothing is removed. Other HTML is left alone. Source titles and URLs are escaped. *Why:* the citation logic has the most edge cases, and the mock data only covers some of them. This is the suite that found the sorting bug.
+- **`tests/test_redaction.py`** (5 tests). Each kind of detail becomes the right placeholder. "Alex Smith", "Alex" and "Smith" become one `[NAME]`. "Alex" and "Smith" found separately become one `[NAME]`. A name part scored higher than the full name is still one `[NAME]`. Text with no details is unchanged. *Why:* the "one `[NAME]`, not `[NAME] [NAME]`" rule is the trickiest part of the task. These tests use a fake model that returns set finds, so they check my Presidio logic exactly and can't pass by luck because of what the real model happened to find.
+
+### End-to-end tests (Cypress): 15 tests
+
+Run them with `cd frontend && npm run test:e2e`, with the app running (`make dev`), or use `npm run cypress` to watch them in the Cypress app. These test the real app from end to end: the real model, the real backend, the real page.
+
+- **`cypress/e2e/api.cy.ts`** (6 tests) calls `GET /data` directly. It checks that none of the 16 personal details in `cypress/fixtures/personal-details.json` appear **anywhere** in the response, that every question has its placeholders, that every link points to one of that item's own sources, that citations are numbered from 1 with cited sources first, and that every source has a favicon. *Why:* the task says the real details must "never leave the backend", so hiding them on the page isn't enough. The API response itself has to be checked.
+- **`cypress/e2e/app.cy.ts`** (9 tests) checks the page as an adviser sees it, grouped under the three frontend requirements in TASK.md:
+  1. *The redacted question.* No personal details anywhere on the page. One `[NAME]` per name. A placeholder for each kind of detail.
+  2. *The answer with working citation links.* No raw `<ref>` tags. Each citation's number matches the number of the source it links to, and it opens safely in a new tab. The debt answer's typo'd ref links to the right source. The bold text is kept.
+  3. *Every source with its favicon.* All four sources per item, cited ones numbered from [1]. Every favicon has actually loaded (`naturalWidth > 0`), not just been given a URL.
+
+  *Why:* the unit tests prove the pieces work, and these prove they work together in a browser. Checking that the image loaded is deliberate: the blank police.uk favicon would have passed a test that only checked an `<img>` was there.
+
+Cypress is a dev dependency, so the first `npm install` also downloads the Cypress app (a few hundred MB). Set `CYPRESS_INSTALL_BINARY=0` to skip that if you don't need to run the tests.
+
+I added `data-testid` attributes to `Content.tsx` so the tests don't depend on Tailwind classes, which change whenever the design does.
+
+Two things I learned getting Cypress to run:
+
+- **VS Code's terminal sets `ELECTRON_RUN_AS_NODE=1`**, so Cypress fails with `bad option: --no-sandbox`. Running `env -u ELECTRON_RUN_AS_NODE npm run test:e2e` fixes it. A normal terminal doesn't have the problem.
+- **The favicon test failed on its first run.** `next/image` lazy-loads images, so favicons further down the page hadn't loaded yet. That was the test's mistake, not the app's, so the test now scrolls each favicon into view first, as an adviser would.
+
+Results: **12/12 pytest, 15/15 Cypress.** `tsc --noEmit` and `npm run lint` also pass.
 
 ## What I'd do with more time
 
-- Frontend tests, for example rendering `Content` with a fixture and checking the sanitiser strips `<script>` and `javascript:` links.
+- A unit test for the sanitiser, checking it strips `<script>`, `onclick` and `javascript:` links. The Cypress tests use the real data, which has none of those, so this protection is reviewed but not tested.
+- Run the pytest and Cypress tests in CI (GitHub Actions) on every push.
 - Make the citation links jump to the source in the list as well as opening the page, so the adviser can see the source's title before leaving the app.
 - Redact and look up favicons once when the data is saved, instead of on each request with an in-memory cache.

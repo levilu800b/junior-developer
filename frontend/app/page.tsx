@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { unstable_rethrow } from "next/navigation";
 import { Suspense } from "react";
 
 import Content from "@/components/Content";
@@ -6,6 +7,8 @@ import { getData } from "@/lib/data";
 
 async function ContentList() {
   const items = await getData().catch((error) => {
+    // Let Next.js's own errors through, e.g. the one that ends prerendering at this fetch
+    unstable_rethrow(error);
     console.error(error);
     return null;
   });
