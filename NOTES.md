@@ -55,12 +55,12 @@ The code is in `backend/app/citations.py`, with tests in `backend/tests/test_cit
 The code is in `backend/app/favicons.py`. For each website (not each page), the backend:
 
 1. Fetches the home page and uses the first `<link rel="icon">` it declares.
-2. If there isn't one, or the page can't be fetched, tries `/favicon.ico` at the site root.
-3. If that fails too, falls back to Google's favicon service (`https://www.google.com/s2/favicons?domain=...`), so the frontend always has an image to show.
+2. If the page loads but doesn't declare an icon, tries `/favicon.ico` at the site root.
+3. Otherwise, including when the home page can't be fetched, falls back to Google's favicon service (`https://www.google.com/s2/favicons?domain=...`), so the frontend always has an image to show.
 
 The sites are looked up at the same time with `httpx.AsyncClient`, and found icons are cached in memory. Failures aren't cached, so a site that's briefly down is tried again next time. `GET /data` became `async` for this.
 
-police.uk returns `403 Forbidden` to the home-page request, probably bot protection. I didn't try to get round that, for example by pretending to be a browser. Its `/favicon.ico` is served normally, so step 2 handles it.
+police.uk returns `403 Forbidden` to the home-page request, probably bot protection. I didn't try to get round that, for example by pretending to be a browser. At first I fell back to its `/favicon.ico`, which is served normally and returned a 200. But when I looked at the page, the icon was blank. I opened the `.ico` file and both of its frames (16px and 32px) are completely transparent: it's a placeholder, and the real icon is only declared on the home page. So now `/favicon.ico` is only tried when the home page loads but doesn't declare an icon. If we can't read the home page, we don't know what the real icon is, so it goes to Google's service, which shows the proper police.uk icon. I learned that a 200 response doesn't mean the image is useful, and you have to look at the result.
 
 Looking favicons up on every request is fine for four items. With more data I'd store each favicon URL alongside the source when it's added, instead of on each read.
 
@@ -74,3 +74,23 @@ The code is in `backend/app/redaction.py`, with tests in `backend/tests/test_red
 - **It fails closed.** If the model throws an error, the request fails with a 500 rather than returning the unredacted question. The original question text is never logged.
 - **Threshold.** I left the model's default threshold of 0.5. The lowest-scoring find in the data is "Reid" at 0.90, so there was no evidence to justify changing it. With real data I'd want to test a lower threshold, because in this domain missing a name is worse than over-redacting a word.
 - **Speed.** The model runs on CPU, so `redact` runs in a thread pool with `run_in_threadpool`, which keeps the async endpoint from blocking the server. In my container, the first request takes about 14 seconds, including the favicon lookups, so each redacted question is cached in memory with `lru_cache`. After the first request, `GET /data` takes under 0.2 seconds. In a real system I'd redact each question once, when it's saved, and only ever store the redacted version.
+
+## Frontend
+
+The code is in `frontend/app/page.tsx`, `frontend/components/Content.tsx` and `frontend/lib/data.ts`. The repo's `AGENTS.md` (written by `next dev`) points out that Next.js 16 differs from older versions, so I read the bundled docs on data fetching and caching first.
+
+- **Fetching.** `ContentList` is a Server Component that calls `getData()` inside the existing `<Suspense>`. With `cacheComponents` on, that streams fresh data on each request behind the "Loading..." fallback. I didn't add `"use cache"`, because the backend is the source of truth and already caches the slow part. The backend URL comes from `BACKEND_URL` and defaults to `http://localhost:8000`. The fetch runs on the server, so it doesn't need a `NEXT_PUBLIC_` variable. If the backend is down, the page shows a message instead of crashing. The types in `lib/data.ts` mirror `backend/app/models.py`.
+- **The answer's HTML.** The answer is HTML written by a model, so I don't pass it straight to `dangerouslySetInnerHTML`. It's cleaned with `sanitize-html` first, on the server, so none of it ships to the browser. Only formatting tags (`b`, `strong`, `em`, lists) and `a` with `href` and `title` are allowed, and only `https` links. Every link gets `target="_blank" rel="noopener noreferrer"`. `npm audit` flagged XSS advisories against sanitize-html up to 2.17.7, so I used 2.18.1, which fixes them. The `\n`s in the answers are kept with `whitespace-pre-line` rather than turned into `<br>`s.
+- **Layout.** Each item is a white card on the blue background, with its category, the question, the answer and the sources.
+  - The question is shown as a quote. Each placeholder is styled as a grey chip with a tooltip ("Name removed"), so it's obvious something was redacted rather than looking like odd text.
+  - Citations are small superscript links: [1], [2] and so on.
+  - The sources list puts the cited ones first, numbered to match the links in the answer. The uncited ones go under "Also found, but not cited in the answer", so the adviser can tell what the answer actually relied on. Each source shows its favicon, title and site name.
+  - The padding gets smaller on narrow screens.
+- **Favicons.** I used `next/image` with `unoptimized`. The icons are 16px and come from any number of sites, so Next's image optimiser gains nothing, and this way `next.config.ts` doesn't need a `remotePatterns` entry for every site a source might come from. They have `alt=""` because they're decorative, and the site name is shown as text next to them.
+- **Checks.** `tsc --noEmit` and `npm run lint` pass. I checked the rendered page with headless Chrome screenshots, which is how I found the blank police.uk icon. The browser console shows a hydration warning, but it comes from my browser extensions (Grammarly and Scribe add attributes to `<body>`), not the app.
+
+## What I'd do with more time
+
+- Frontend tests, for example rendering `Content` with a fixture and checking the sanitiser strips `<script>` and `javascript:` links.
+- Make the citation links jump to the source in the list as well as opening the page, so the adviser can see the source's title before leaving the app.
+- Redact and look up favicons once when the data is saved, instead of on each request with an in-memory cache.
